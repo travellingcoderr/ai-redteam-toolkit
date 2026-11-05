@@ -1,0 +1,17 @@
+name: LLM red-team gate
+on: [pull_request]
+jobs:
+  redteam:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - name: Run attacks
+        env:
+          OPENAI_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: python redteam/runner.py --base-url ${{ vars.LLM_BASE_URL }} --model ${{ vars.LLM_MODEL }} --threshold 0.9
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: redteam-report, path: report.json }
