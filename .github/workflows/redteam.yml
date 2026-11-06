@@ -1,17 +1,55 @@
 name: LLM red-team gate
-on: [pull_request]
+on:
+  push:
+  pull_request:
+
 jobs:
-  redteam:
+  unit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
       - run: pip install -r requirements.txt
-      - name: Run attacks
+      - run: pytest -q
+
+  # Proves the gate works without any API key: an unprotected vulnerable target must FAIL,
+  # the same target behind the full guardrail stack must PASS.
+  gate-self-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - name: Unprotected target must fail the gate
+        run: |
+          if python -m redteam.runner --target mock-vulnerable --guardrails none --report unprotected.json; then
+            echo "::error::gate passed an unprotected vulnerable target"; exit 1
+          fi
+      - name: Guarded target must pass the gate
+        run: python -m redteam.runner --target mock-vulnerable --guardrails full --report guarded.json
+      - if: always()
+        run: cat unprotected.md guarded.md >> "$GITHUB_STEP_SUMMARY" || true
+
+  # Real model behind your endpoint. Set repo variables LLM_BASE_URL / LLM_MODEL
+  # (and secret LLM_API_KEY if the endpoint needs one).
+  live-endpoint:
+    if: ${{ vars.LLM_BASE_URL != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - name: Attack the endpoint
         env:
           OPENAI_API_KEY: ${{ secrets.LLM_API_KEY }}
-        run: python redteam/runner.py --base-url ${{ vars.LLM_BASE_URL }} --model ${{ vars.LLM_MODEL }} --threshold 0.9
+        run: |
+          python -m redteam.runner --base-url "${{ vars.LLM_BASE_URL }}" --model "${{ vars.LLM_MODEL }}" \
+            --guardrails "${{ vars.LLM_GUARDRAILS || 'full' }}" --threshold 0.9 --report report.json
+      - if: always()
+        run: cat report.md >> "$GITHUB_STEP_SUMMARY" || true
       - uses: actions/upload-artifact@v4
         if: always()
-        with: { name: redteam-report, path: report.json }
+        with: { name: redteam-report, path: "report.*" }
